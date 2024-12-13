@@ -5,21 +5,26 @@ pub mod utils;
 // use serialport::{SerialPort, SerialPortType};
 use std::{
     sync::{
-        mpsc::{self, Receiver, Sender, SyncSender, TryRecvError},
-        Mutex,
-    },
-    thread,
-    time::Duration,
+        mpsc::{self, Receiver, Sender, SyncSender, TryRecvError}, Arc, Mutex
+    }, thread::{self, JoinHandle}, time::Duration
 };
 
-use async_std::{net::ToSocketAddrs, task};
+// <<<<<<< Updated upstream
+// use async_std::{net::ToSocketAddrs, task};
 use audio::{Signal, SystemMessage};
 // use beat_detector::recording;
+// =======
+// use async_std::task;
+use audio::Command;
+use audioviz::audio_capture::config::Config;
+use beat_detector::recording;
+// >>>>>>> Stashed changes
 use cpal::{
     traits::{DeviceTrait, StreamTrait},
     Device, HostId,
 };
 use serde::Serialize;
+use serialport::{SerialPort, SerialPortType};
 use tauri::{AppHandle, Builder, Emitter, Manager, State, Window};
 use utils::init_logger;
 
@@ -203,6 +208,7 @@ async fn audio_thread(from_frontend: Receiver<FromFrontend>) {
     let mut device: Option<Device> = None;
     let mut device_changed = false;
 
+// <<<<<<< Updated upstream
     // From audio to frontend.
     let (signal_out, signal_receiver) = mpsc::channel();
     let (system_out, system_receiver) = mpsc::channel();
@@ -243,6 +249,10 @@ async fn audio_thread(from_frontend: Receiver<FromFrontend>) {
             }
         }
     });
+// =======
+    let mut sender: Option<Sender<Command>> = None;
+    let mut handle: Option<JoinHandle<()>> = None;
+// >>>>>>> Stashed changes
 
     loop {
         thread::sleep(heartbeat_delay);
@@ -275,12 +285,31 @@ async fn audio_thread(from_frontend: Receiver<FromFrontend>) {
 
             device_changed = true;
         } else if device_changed {
+// <<<<<<< Updated upstream
             let (sig, sys) = (signal_out.clone(), system_out.clone());
-            thread::spawn(move || audio::foo(sig, sys));
+            //thread::spawn(move || audio::foo(sig, sys));
+// =======
+            if let (Some(sender), Some(handle)) = (sender, handle) {
+                println!("Killing old thread!");
+                sender.send(Command::KillThread).unwrap();
+                handle.join().unwrap();
+                println!("Old thread finished...");
+            }
+
+            let window = window.clone();
+            let mut conf = Config::default();
+            conf.device = device.clone().unwrap().name().unwrap();
+
+            let (sn, receiver) = mpsc::channel();
+            sender = Some(sn);
+
+            let hn = thread::spawn(|| audio::thread_target( conf, receiver, sig, sys, ).unwrap());
+            handle = Some(hn);
+// >>>>>>> Stashed changes
 
             device_changed = false;
             println!(
-                "Started audio detector thread: {}...",
+                "OK: Started audio detector thread: {}...",
                 device.clone().unwrap().name().unwrap()
             );
         }
@@ -332,7 +361,7 @@ pub fn run() {
     //
     // return;
 
-    task::spawn(async { audio_thread(from_frontend_receiver).await });
+    // thread::spawn(async { audio_thread(from_frontend_receiver).await });
 
     Builder::default()
         .plugin(tauri_plugin_shell::init())

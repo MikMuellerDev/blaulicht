@@ -8,7 +8,10 @@ use std::{
     time::{self, Duration},
 };
 
-use audioviz::audio_capture::{capture::Capture, config::Config as CaptureConfig};
+use audioviz::audio_capture::{
+    capture::{Capture, Error},
+    config::Config as CaptureConfig,
+};
 use audioviz::{
     audio_capture::capture::CaptureReceiver,
     spectrum::{
@@ -148,16 +151,28 @@ impl Converter {
     }
 }
 
+// <<<<<<< Updated upstream
 pub enum Signal {
     Beat(u8),
     Bass(u8),
     Volume(u8),
 }
+// =======
+pub enum Command {
+    KillThread,
+}
+
+// pub fn run(mut converter: Converter, receiver: Receiver<Command>, window: Window) {
+//     'outer: loop {
+//         thread::sleep(Duration::from_millis(1000));
+//         let min_time_between_updates = Duration::from_millis(70);
+// >>>>>>> Stashed changes
 
 pub enum SystemMessage {
     LoopSpeed(Duration),
 }
 
+// <<<<<<< Updated upstream
 const ROLLING_AVERAGE_LOOP_ITERATIONS: usize = 100;
 const ROLLING_AVERAGE_VOLUME_SAMPLE_SIZE: usize = ROLLING_AVERAGE_LOOP_ITERATIONS / 2;
 
@@ -187,6 +202,35 @@ macro_rules! message {
         if $now - $last_publish > $speed {
             $out.send($message).unwrap();
             $last_publish = $now
+// =======
+//         let mut port = None;
+//         if ENABLE_SERIAL {
+//             let mut raw_port = match SerialPort::open(PORT, 115200) {
+//                 Ok(p) => p,
+//                 Err(err) => {
+//                     eprintln!("Open port: {err:?}");
+//                     continue;
+//                 }
+//             };
+//             raw_port
+//                 .set_read_timeout(Duration::from_millis(10))
+//                 .unwrap();
+//             raw_port
+//                 .set_write_timeout(Duration::from_millis(10))
+//                 .unwrap();
+
+//             eprintln!("Port opened.");
+
+//             port = Some(Arc::new(raw_port));
+
+//             match write_port_color(port.clone().unwrap(), INIT_COLOR) {
+//                 Ok(_) => {}
+//                 Err(_) => {
+//                     eprintln!("Not syncing -> (OUTER)...");
+//                     continue;
+//                 }
+//             }
+// >>>>>>> Stashed changes
         }
     };
 }
@@ -241,6 +285,7 @@ pub fn run(
             let loop_speed = now - loop_begin_time;
             loop_begin_time = now;
 
+// <<<<<<< Updated upstream
             system_message!(
                 now,
                 time_of_last_system_publish,
@@ -261,6 +306,59 @@ pub fn run(
                 let volume_mean = ((volume_samples.iter().sum::<usize>() as f32)
                     / (volume_samples.len() as f32)
                     * 10.0) as usize;
+// =======
+//             if now - time_of_last_speed_publish > Duration::from_millis(1000) {
+//                 window
+//                     .emit("msg", ToFrontend::Speed(loop_speed.as_micros() as usize))
+//                     .unwrap();
+//                 time_of_last_speed_publish = now
+//             }
+
+//                 if let Ok(data) = receiver.try_recv() {
+//                     match data {
+//                         Command::KillThread => {
+//                             println!("X: Killing audio capture thread...");
+//                             break 'outer;
+//                         },
+//                     }
+
+//                     // match port.write(data.as_bytes()) {
+//                     //     Ok(_) => {}
+//                     //     Err(_) => {
+//                     //         break 'inner;
+//                     //     }
+//                     // }
+//                     // match port.flush() {
+//                     //     Ok(_) => {}
+//                     //     Err(_) => {
+//                     //         break 'inner;
+//                     //     }
+//                     // }
+//                 }
+//             // if let Some(port) = port.clone() {
+//             // }
+//             let values = converter.freqs();
+
+
+//             #[cfg(linux)]
+//             let os_factor = 10;
+
+//             #[cfg(windows)]
+//             let os_factor = 5;
+
+//             if time::Instant::now() - time_of_last_volume_publish > Duration::from_millis(100) {
+//                 let mut volume_mean = ((volume_samples.iter().sum::<usize>() as f32)
+//                     / (volume_samples.len() as f32)
+//                     * (os_factor as f32)) as usize;
+//                 if volume_mean > 100 {
+//                     volume_mean = 100;
+//                 }
+//                 // We multiply by 10 since the source volume is between 0 and 10.
+//                 window.emit("msg", ToFrontend::Volume(volume_mean)).unwrap();
+//                 println!("vol_dbg={}", values[values.len() / 2].volume);
+//                 time_of_last_volume_publish = time::Instant::now();
+//             }
+// >>>>>>> Stashed changes
 
                 Signal::Volume(volume_mean as u8)
             });
@@ -278,7 +376,13 @@ pub fn run(
                     })
                     .volume as usize
             );
+// <<<<<<< Updated upstream
         }
+// =======
+            if volume_samples.len() > 10 {
+                volume_samples.pop_front();
+            }
+// >>>>>>> Stashed changes
 
         //
         // Update loudest signal.
@@ -314,6 +418,7 @@ pub fn run(
 
             let long_sum = long_historic.iter().sum::<usize>();
 
+// <<<<<<< Updated upstream
             if long_sum == 0 {
                 if !loop_inactive {
                     eprintln!("long historic is 0: sleeping");
@@ -325,6 +430,35 @@ pub fn run(
             } else if loop_inactive {
                 eprintln!("long = {long_sum}");
                 loop_inactive = false
+// =======
+//             if let Some(port) = port.clone() {
+//                 if long_sum == 0 {
+//                     if !sleeping {
+//                         match write_port_color(port.clone(), b'f') {
+//                             Ok(_) => {}
+//                             Err(_) => {
+//                                 eprintln!("Not syncing...");
+//                                 break 'inner;
+//                             }
+//                         }
+//                         eprintln!("long historic is 0: sleeping");
+//                     }
+
+//                     eprintln!("sleeping");
+//                     thread::sleep(Duration::from_millis(500));
+//                     sleeping = true;
+//                 } else if sleeping {
+//                     match write_port_color(port.clone(), b'n') {
+//                         Ok(_) => {}
+//                         Err(_) => {
+//                             eprintln!("Not syncing...");
+//                             break 'inner;
+//                         }
+//                     }
+//                     eprintln!("long = {long_sum}");
+//                     sleeping = false
+//                 }
+// >>>>>>> Stashed changes
             }
 
             const MAX_BEAT_VOLUME: u8 = 255;
@@ -349,18 +483,44 @@ pub fn run(
 
                 last_index = index_mapped;
 
+// <<<<<<< Updated upstream
                 Signal::Beat(index_mapped as u8)
             });
+// =======
+//             eprintln!(
+//             "index = {index_mapped:02} | curr = {curr:03} | min = {min:03} | avg = {avg:03} | max = {max:03}",
+//         );
+
+//             let output_char = (b'A' + index_mapped as u8) as u32;
+
+//             // let index_percent = map(*curr as isize, *min as isize, *max as isize, 0, CODES_MAX);
+//             window.emit("msg", ToFrontend::Beat(index_mapped)).unwrap();
+
+//             if let Some(port) = port.clone() {
+//                 match port.write(&[output_char as u8]) {
+//                     Ok(_) => {}
+//                     Err(_) => {
+//                         eprintln!("Not syncing...");
+//                         break 'inner;
+//                     }
+//                 }
+//                 port.flush().unwrap();
+//             }
+// >>>>>>> Stashed changes
         }
     }
 }
 
-pub fn foo(signal_out: Sender<Signal>, system_out: Sender<SystemMessage>) {
-    // let (sender, receiver) = mpsc::channel();
+// <<<<<<< Updated upstream
+// pub fn foo(signal_out: Sender<Signal>, system_out: Sender<SystemMessage>) {
+//     // let (sender, receiver) = mpsc::channel();
 
+// =======
+pub fn thread_target(audio_capture_config: CaptureConfig, receiver: Receiver<Command>, signal_out: Sender<Signal>, system_out: Sender<SystemMessage>) -> Result<(), Error> {
+// >>>>>>> Stashed changes
     let config = Config::default();
 
-    let audio_capture_config = CaptureConfig::default();
+    // let audio_capture_config = CaptureConfig::default();
 
     let capture = Capture::init(audio_capture_config).unwrap();
     let converter: Converter = match config.visualisation {
@@ -372,8 +532,12 @@ pub fn foo(signal_out: Sender<Signal>, system_out: Sender<SystemMessage>) {
         Visualisation::Scope => Converter::from_capture(capture, config.clone()),
     };
 
+// <<<<<<< Updated upstream
     // let (signal_out, signal_receiver) = mpsc::channel();
     // let (system_out, system_receiver) = mpsc::channel();
 
-    run(converter, signal_out, system_out);
+    // run(converter, signal_out, system_out);
+    run( converter, signal_out, system_out);
+
+    Ok(())
 }
