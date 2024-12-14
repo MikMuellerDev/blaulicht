@@ -8,11 +8,16 @@ pkgs.mkShell {
     cargo
     cargo-tauri
     nodejs
+    libudev-zero
+    libudev0-shim
+    libgudev
 
     librsvg
+    pkgs.stdenv.cc.cc
   ];
 
   buildInputs = with pkgs;[
+    pkgs.stdenv.cc.cc
     at-spi2-atk
     atkmm
     cairo
@@ -30,6 +35,9 @@ pkgs.mkShell {
 
     alsa-lib
     pkg-config
+    libudev-zero
+    libudev0-shim
+    libgudev
 
     librsvg
   ];

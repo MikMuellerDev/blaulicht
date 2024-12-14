@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     sync::{
-        mpsc::{self, Receiver},
+        mpsc::{self, Receiver, Sender},
         Arc,
     },
     thread,
@@ -17,22 +17,7 @@ use audioviz::{
     },
 };
 use serde::{Deserialize, Serialize};
-use serial2::SerialPort;
-use tauri::{Emitter, Window};
 
-use crate::ToFrontend;
-
-const INIT_COLOR: u8 = b'g';
-
-const PORT: &str = "/dev/pts/2";
-
-fn write_port_color(port: Arc<SerialPort>, color: u8) -> Result<(), ()> {
-    port.write(&[color]).unwrap();
-    match port.flush() {
-        Ok(_) => Ok(()),
-        Err(_) => Err(()),
-    }
-}
 
 fn map(x: isize, in_min: isize, in_max: isize, out_min: isize, out_max: isize) -> usize {
     let divisor = (in_max - in_min).max(1);
@@ -163,111 +148,143 @@ impl Converter {
     }
 }
 
-pub fn run(mut converter: Converter, receiver: Receiver<String>, window: Window) {
-    loop {
-        thread::sleep(Duration::from_millis(1000));
-        let min_time_between_updates = Duration::from_millis(70);
+pub enum Signal {
+    Beat(u8),
+    Bass(u8),
+    Volume(u8),
+}
 
-        let CODES_MAX = 1;
+pub enum SystemMessage {
+    LoopSpeed(Duration),
+}
 
-        let mut raw_port = match SerialPort::open(PORT, 115200) {
-            Ok(p) => p,
-            Err(err) => {
-                eprintln!("Open port: {err:?}");
-                continue;
-            }
-        };
-        raw_port
-            .set_read_timeout(Duration::from_millis(10))
-            .unwrap();
-        raw_port
-            .set_write_timeout(Duration::from_millis(10))
-            .unwrap();
+const ROLLING_AVERAGE_LOOP_ITERATIONS: usize = 100;
+const ROLLING_AVERAGE_VOLUME_SAMPLE_SIZE: usize = ROLLING_AVERAGE_LOOP_ITERATIONS / 2;
 
-        eprintln!("Port opened.");
+const SYSTEM_MESSAGE_SPEED: Duration = Duration::from_millis(1000);
+const SIGNAL_SPEED: Duration = Duration::from_millis(50);
 
-        let port = Arc::new(raw_port);
+macro_rules! system_message {
+    ($now:ident,$last_publish:ident,$system_out:ident,$message:expr) => {
+        message!(
+            $now,
+            $last_publish,
+            SYSTEM_MESSAGE_SPEED,
+            $system_out,
+            $message
+        )
+    };
+}
 
-        match write_port_color(port.clone(), INIT_COLOR) {
-            Ok(_) => {}
-            Err(_) => {
-                eprintln!("Not syncing (OUTER)...");
-                continue;
-            }
+macro_rules! signal {
+    ($now:ident,$last_publish:ident,$system_out:ident,$message:expr) => {
+        message!($now, $last_publish, SIGNAL_SPEED, $system_out, $message)
+    };
+}
+
+macro_rules! message {
+    ($now:ident,$last_publish:ident,$speed:ident,$out:ident,$message:expr) => {
+        if $now - $last_publish > $speed {
+            $out.send($message).unwrap();
+            $last_publish = $now
         }
+    };
+}
 
-        let mut last_index = 0;
+///
+///
+/// Vector push operations.
+///
+///
 
-        let mut last_update = time::Instant::now();
+macro_rules! shift_push {
+    ($vector:ident,$capacity:ident,$item:expr) => {
+        $vector.push_back($item);
+        if $vector.len() > $capacity {
+            $vector.pop_front();
+        }
+    };
+}
 
-        let rolling_average_frames = 100;
-        let long_historic_frames = rolling_average_frames * 100;
+pub fn run(
+    mut converter: Converter,
+    signal_out: Sender<Signal>,
+    system_out: Sender<SystemMessage>,
+) {
+    // Energy saving.
+    let mut loop_inactive = true;
 
-        let mut long_historic = VecDeque::with_capacity(long_historic_frames);
+    // Loop speed.
+    let mut time_of_last_system_publish = time::Instant::now();
+    let mut loop_begin_time = time::Instant::now();
 
-        let mut historic = VecDeque::with_capacity(rolling_average_frames);
+    // Volume.
+    let mut time_of_last_volume_publish = time::Instant::now();
+    let mut volume_samples: VecDeque<usize> =
+        VecDeque::with_capacity(ROLLING_AVERAGE_LOOP_ITERATIONS);
 
-        let mut sleeping = true;
+    // Beat
+    let mut time_of_last_beat_publish = time::Instant::now();
+    let mut last_index = 0;
+    let mut last_update = time::Instant::now();
+    let rolling_average_frames = 100;
+    let long_historic_frames = rolling_average_frames * 100;
+    let mut long_historic = VecDeque::with_capacity(long_historic_frames);
+    let mut historic = VecDeque::with_capacity(rolling_average_frames);
 
-        let mut volume_samples: VecDeque<usize> = VecDeque::with_capacity(rolling_average_frames);
-
-        let mut time_of_last_volume_publish = time::Instant::now();
-
-        let mut loop_begin_time = time::Instant::now();
-
-        let mut time_of_last_speed_publish = time::Instant::now();
-
-        'inner: loop {
-            let now = time::Instant::now();
+    loop {
+        //
+        // Measure loop speed.
+        //
+        let now = time::Instant::now();
+        {
             let loop_speed = now - loop_begin_time;
-            println!("speed = {loop_speed:?}");
             loop_begin_time = now;
 
-            if now - time_of_last_speed_publish > Duration::from_millis(1000) {
-                window.emit("msg", ToFrontend::Speed(loop_speed.as_micros() as usize)).unwrap();
-                time_of_last_speed_publish = now
-            }
+            system_message!(
+                now,
+                time_of_last_system_publish,
+                system_out,
+                SystemMessage::LoopSpeed(loop_speed)
+            );
+        }
 
-            if let Ok(data) = receiver.try_recv() {
-                match port.write(data.as_bytes()) {
-                    Ok(_) => {}
-                    Err(_) => {
-                        break 'inner;
-                    }
-                }
-                match port.flush() {
-                    Ok(_) => {}
-                    Err(_) => {
-                        break 'inner;
-                    }
-                }
-            }
-            let values = converter.freqs();
+        /////////////////// Signal Begin ///////////////
 
-            if time::Instant::now() - time_of_last_volume_publish > Duration::from_millis(100) {
-                let mut volume_mean = ((volume_samples.iter().sum::<usize>() as f32)
+        let values = converter.freqs();
+
+        //
+        // Update volume signal.
+        //
+        {
+            signal!(now, time_of_last_volume_publish, signal_out, {
+                let volume_mean = ((volume_samples.iter().sum::<usize>() as f32)
                     / (volume_samples.len() as f32)
                     * 10.0) as usize;
-                if volume_mean > 100 {
-                    volume_mean = 100;
-                }
-                println!("vol_mean = {volume_mean}");
-                // We multiply by 10 since the source volume is between 0 and 10.
-                window.emit("msg", ToFrontend::Volume(volume_mean)).unwrap();
-                time_of_last_volume_publish = time::Instant::now();
-            }
 
-            volume_samples.push_back(
+                Signal::Volume(volume_mean as u8)
+            });
+
+            shift_push!(
+                volume_samples,
+                ROLLING_AVERAGE_VOLUME_SAMPLE_SIZE,
                 values
                     .iter()
                     .max_by_key(|f| (f.volume * 10.0) as usize)
-                    .unwrap()
-                    .volume as usize,
+                    .unwrap_or(&Frequency {
+                        volume: 0f32,
+                        freq: 0f32,
+                        position: 0f32
+                    })
+                    .volume as usize
             );
-            if volume_samples.len() > rolling_average_frames / 2 {
-                volume_samples.pop_front();
-            }
+        }
 
+        //
+        // Update loudest signal.
+        //
+
+        {
             let curr: Vec<usize> = values
                 .chunks(2)
                 // TODO: only look at the base line?
@@ -298,70 +315,48 @@ pub fn run(mut converter: Converter, receiver: Receiver<String>, window: Window)
             let long_sum = long_historic.iter().sum::<usize>();
 
             if long_sum == 0 {
-                if !sleeping {
-                    match write_port_color(port.clone(), b'f') {
-                        Ok(_) => {}
-                        Err(_) => {
-                            eprintln!("Not syncing...");
-                            break 'inner;
-                        }
-                    }
+                if !loop_inactive {
                     eprintln!("long historic is 0: sleeping");
                 }
 
                 eprintln!("sleeping");
                 thread::sleep(Duration::from_millis(500));
-                sleeping = true;
-            } else if sleeping {
-                match write_port_color(port.clone(), b'n') {
-                    Ok(_) => {}
-                    Err(_) => {
-                        eprintln!("Not syncing...");
-                        break 'inner;
-                    }
-                }
+                loop_inactive = true;
+            } else if loop_inactive {
                 eprintln!("long = {long_sum}");
-                sleeping = false
+                loop_inactive = false
             }
 
-            let index_mapped = map(*curr as isize, *min as isize, *max as isize, 0, CODES_MAX);
+            const MAX_BEAT_VOLUME: u8 = 255;
+            let index_mapped = map(
+                *curr as isize,
+                *min as isize,
+                *max as isize,
+                0,
+                MAX_BEAT_VOLUME as isize,
+            );
 
             if last_index == index_mapped {
                 continue;
             }
 
             let now = time::Instant::now();
-            if (now - last_update) < min_time_between_updates {
-                continue;
-            }
 
-            last_index = index_mapped;
+            signal!(now, time_of_last_beat_publish, signal_out, {
+                eprintln!(
+                "index = {index_mapped:02} | curr = {curr:03} | min = {min:03} | avg = {avg:03} | max = {max:03}",
+            );
 
-            last_update = now;
+                last_index = index_mapped;
 
-            eprintln!(
-            "index = {index_mapped:02} | curr = {curr:03} | min = {min:03} | avg = {avg:03} | max = {max:03}",
-        );
-
-            let output_char = (b'A' + index_mapped as u8) as u32;
-
-            // let index_percent = map(*curr as isize, *min as isize, *max as isize, 0, CODES_MAX);
-            window.emit("msg", ToFrontend::Beat(index_mapped)).unwrap();
-
-            match port.write(&[output_char as u8]) {
-                Ok(_) => {}
-                Err(_) => {
-                    eprintln!("Not syncing...");
-                    break 'inner;
-                }
-            }
-            port.flush().unwrap();
+                Signal::Beat(index_mapped as u8)
+            });
         }
     }
 }
 
-pub fn foo(window: Window) {
-    let (sender, receiver) = mpsc::channel();
+pub fn foo(signal_out: Sender<Signal>, system_out: Sender<SystemMessage>) {
+    // let (sender, receiver) = mpsc::channel();
 
     let config = Config::default();
 
@@ -377,5 +372,8 @@ pub fn foo(window: Window) {
         Visualisation::Scope => Converter::from_capture(capture, config.clone()),
     };
 
-    run(converter, receiver, window);
+    // let (signal_out, signal_receiver) = mpsc::channel();
+    // let (system_out, system_receiver) = mpsc::channel();
+
+    run(converter, signal_out, system_out);
 }

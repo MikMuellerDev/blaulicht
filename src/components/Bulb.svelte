@@ -3,7 +3,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
 
-    export let active = false
+    export let active = true
     export let size = 30
 
     export let activeColor = "lime"
@@ -26,11 +26,11 @@
     }
 
     function initializeCanvas() {
-        visualizeCanvas!.style.width = `${size}`
-        visualizeCanvas!.style.height = `${size}`
         visualizeCanvas!.width = size
         visualizeCanvas!.height = size
-        visualizeCanvasContext2D!.fillStyle = 'white'
+
+        console.log(`New bulb with size: ${size}`)
+
         window.requestAnimationFrame(draw);
     }
 
@@ -38,7 +38,6 @@
             visualizeCanvasContext2D = visualizeCanvas?.getContext("2d")
             if (!visualizeCanvas || !visualizeCanvasContext2D) {
                 console.error("Broken")
-                return
             }
 
             initializeCanvas()
@@ -50,5 +49,7 @@
 <style>
     .bulb {
         background-color: transparent;
+        width: 2rem;
+        height: 2rem;
     }
 </style>

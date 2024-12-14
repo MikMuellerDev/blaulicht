@@ -43,6 +43,7 @@
 
   let heartBeatActiveToggle = false
   function onHeartbeat() {
+    console.log('beat')
     heartBeatActiveToggle = !heartBeatActiveToggle
   }
 
@@ -55,10 +56,14 @@
         } else if (payload === "Heartbeat") {
             onHeartbeat()
         } else if (payload.Beat !== null && payload.Beat !== undefined) {
-            beatSignal = payload.Beat === 1 ? true : false
+            beatSignal0 = payload.Beat >= 1 ? true : false
+            beatSignal1 = payload.Beat >= 255 / 3  * 1 ? true : false
+            beatSignal2 = payload.Beat >= 255 / 3 * 2 ? true : false
         } else if (payload.Speed) {
             speed = payload.Speed
         }
+
+        console.log(payload)
   }
 
   function transition(oldV: number, newV: number): number[] {
@@ -177,6 +182,12 @@ const visualizeCanvasWidth = 50
     window.requestAnimationFrame(draw);
   }
 
+  document.onload= () => {
+    setTimeout(() => {
+        window.location.href += "#1"
+    }, 1000)
+  }
+
   onMount(async () => {
         logs = [ 'Initializing...' ]
 
@@ -196,13 +207,16 @@ const visualizeCanvasWidth = 50
         logs = [...logs, "Ready."]
   })
 
-  let beatSignal = false
+  let beatSignal0 = false
+  let beatSignal1 = false
+  let beatSignal2 = false
+
 </script>
 
 <main class="container">
     <div class='top_bar'>
         <div class="top_bar__element">
-            <Bulb size={20} bind:active={heartBeatActiveToggle}></Bulb>
+            <Bulb size={30} bind:active={heartBeatActiveToggle}></Bulb>
             <span>Heartbeat</span>
         </div>
 
@@ -222,7 +236,9 @@ const visualizeCanvasWidth = 50
 
             <div class='below-center'>
                 Beat
-                <Bulb size={40} bind:active={beatSignal}></Bulb>
+                <Bulb size={40} bind:active={beatSignal0}></Bulb>
+                <Bulb size={40} bind:active={beatSignal1}></Bulb>
+                <Bulb size={40} bind:active={beatSignal2}></Bulb>
             </div>
 
             <!-- <code> -->

@@ -2,6 +2,7 @@ pub mod audio;
 mod inputs;
 pub mod utils;
 
+// use serialport::{SerialPort, SerialPortType};
 use std::{
     sync::{
         mpsc::{self, Receiver, Sender, SyncSender, TryRecvError},
@@ -11,8 +12,9 @@ use std::{
     time::Duration,
 };
 
-use async_std::task;
-use beat_detector::recording;
+use async_std::{net::ToSocketAddrs, task};
+use audio::{Signal, SystemMessage};
+// use beat_detector::recording;
 use cpal::{
     traits::{DeviceTrait, StreamTrait},
     Device, HostId,
@@ -21,7 +23,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Builder, Emitter, Manager, State, Window};
 use utils::init_logger;
 
-use crate::inputs::start;
+// use crate::inputs::start;
 
 struct AppData {
     welcome_message: &'static str,
@@ -108,8 +110,8 @@ fn socket(state: State<'_, AppData>, window: Window) {
 
 #[derive(Serialize, Clone, Copy)]
 enum ToFrontend {
-    Volume(usize),
-    Beat(usize),
+    Volume(u8),
+    Beat(u8),
     Speed(usize),
     Heartbeat,
 }
@@ -119,6 +121,71 @@ enum FromFrontend {
     NewWindow(Window),
     SelectInputDevice(Device),
 }
+
+struct DmxUniverse {
+    serial: Box<dyn SerialPort>,
+    channels: [u8; 513],
+}
+
+impl DmxUniverse {
+    fn new(port_path: String) -> Self {
+        let port = serialport::new(port_path, 250000)
+            .timeout(Duration::from_millis(1))
+            .stop_bits(serialport::StopBits::Two)
+            .data_bits(serialport::DataBits::Eight)
+            .parity(serialport::Parity::None)
+            .open()
+            .expect("Failed to open port");
+
+        Self {
+            serial: port,
+            channels: [0; 513],
+        }
+    }
+
+    fn signal(&mut self, signal: Signal) {
+        match signal {
+            Signal::Beat(volume) => {
+                // TODO: engine here
+                if volume > 1 {
+                    self.channels[1] = 255;
+                    self.channels[2] = 255;
+                    self.channels[3] = 255;
+                    self.channels[4] = 255;
+                } else {
+                    self.channels[1] = 0;
+                }
+            }
+            Signal::Bass(_) => todo!(),
+            Signal::Volume(_) => todo!(),
+        }
+    }
+
+    fn send_break(&self, duration: Duration) {
+        self.serial.set_break().expect("Failed to set break");
+        spin_sleep::sleep(duration);
+        self.serial.clear_break().expect("Failed to clear break");
+    }
+
+    fn write_to_serial(&mut self) {
+        self.send_break(Duration::from_micros(100));
+        spin_sleep::sleep(Duration::from_micros(100));
+        self.serial.write_all(&self.channels).unwrap();
+        self.serial.flush().unwrap();
+    }
+}
+
+struct UsbDevice {
+    vid: u16,
+    pid: u16,
+}
+
+const EUROLITE_USB_DMX512_PRO_CABLE_INTERFACE: UsbDevice = UsbDevice {
+    vid: 1027,
+    pid: 24577,
+};
+
+const USB_DEVICES: [UsbDevice; 1] = [EUROLITE_USB_DMX512_PRO_CABLE_INTERFACE];
 
 async fn audio_thread(from_frontend: Receiver<FromFrontend>) {
     let begin_msg = from_frontend.recv().unwrap();
@@ -136,12 +203,53 @@ async fn audio_thread(from_frontend: Receiver<FromFrontend>) {
     let mut device: Option<Device> = None;
     let mut device_changed = false;
 
+    // From audio to frontend.
+    let (signal_out, signal_receiver) = mpsc::channel();
+    let (system_out, system_receiver) = mpsc::channel();
+
+    let w = window.clone();
+
+    thread::spawn(move || {
+        let ports = serialport::available_ports().unwrap();
+        let port = ports.iter().find(|p| {
+            let SerialPortType::UsbPort(usb) = p.port_type.clone() else {
+                return false;
+            };
+
+            USB_DEVICES
+                .iter()
+                .any(|d| d.pid == usb.pid && d.vid == usb.pid)
+        });
+        let name = port.unwrap().port_name.clone();
+        println!("Found port: {name}");
+        DmxUniverse::new(name);
+
+        loop {
+            // Dispatch signals to frontend and to DMX engine.
+            match signal_receiver.try_recv() {
+                Ok(Signal::Beat(v)) => w.emit("msg", ToFrontend::Beat(v)).unwrap(),
+                Ok(Signal::Bass(_)) => todo!(),
+                Ok(Signal::Volume(v)) => w.emit("msg", ToFrontend::Volume(v)).unwrap(),
+                Err(TryRecvError::Empty) => {}
+                Err(err) => panic!("{err:?}"),
+            }
+
+            match system_receiver.try_recv() {
+                Ok(SystemMessage::LoopSpeed(speed)) => w
+                    .emit("msg", ToFrontend::Speed(speed.as_micros() as usize))
+                    .unwrap(),
+                Err(TryRecvError::Empty) => {}
+                Err(err) => panic!("{err:?}"),
+            }
+        }
+    });
+
     loop {
         thread::sleep(heartbeat_delay);
         window.emit("msg", ToFrontend::Heartbeat).unwrap();
 
         match from_frontend.try_recv() {
-            Ok(FromFrontend::NewWindow(_)) => todo!(),
+            Ok(FromFrontend::NewWindow(_)) => unreachable!(),
             Ok(FromFrontend::SelectInputDevice(dev)) => {
                 device = Some(dev.clone());
                 device_changed = true;
@@ -167,8 +275,8 @@ async fn audio_thread(from_frontend: Receiver<FromFrontend>) {
 
             device_changed = true;
         } else if device_changed {
-            let window = window.clone();
-            thread::spawn(|| audio::foo(window));
+            let (sig, sys) = (signal_out.clone(), system_out.clone());
+            thread::spawn(move || audio::foo(sig, sys));
 
             device_changed = false;
             println!(
